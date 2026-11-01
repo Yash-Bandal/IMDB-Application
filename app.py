@@ -1,21 +1,16 @@
-import json
 import logging
 import os
 import re
-import secrets
 import uuid
-from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
+from datetime import date, datetime
 from urllib.parse import quote
 
-import jwt
-import pyodbc
+import pytds
 import requests
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.exceptions import HTTPException
-from werkzeug.security import check_password_hash, generate_password_hash
 
 
 load_dotenv()
@@ -25,59 +20,17 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("imdb_api")
 
 
-def load_legacy_settings():
-    settings = {}
-    config_files = (
-        Path(__file__).parent / "IMDB_API" / "appsettings.json",
-        Path(__file__).parent / "IMDB_API" / "appsettings.Development.json",
-        Path(__file__).parent / "IMDB_API" / "bin" / "Debug" / "net5.0" / "appsettings.json",
-        Path(__file__).parent / "IMDB_API" / "bin" / "Debug" / "net5.0" / "appsettings.Development.json",
-    )
-    mappings = {
-        "DATABASE_CONNECTION_STRING": ("ConnectionStrings", "IMDBConnection"),
-        "JWT_SECRET": ("Jwt", "Key"),
-        "JWT_ISSUER": ("Jwt", "Issuer"),
-        "JWT_AUDIENCE": ("Jwt", "Audience"),
-        "JWT_EXPIRY_MINUTES": ("Jwt", "ExpiryMinutes"),
-        "SUPABASE_URL": ("Supabase", "Url"),
-        "SUPABASE_SECRET_KEY": ("Supabase", "SecretKey"),
-        "SUPABASE_BUCKET_NAME": ("Supabase", "BucketName"),
-        "CORS_ALLOWED_ORIGINS": ("Cors", "AllowedOrigins"),
-    }
-
-    for config_file in config_files:
-        if not config_file.is_file():
-            continue
-        contents = re.sub(r"(?m)^\s*//.*$", "", config_file.read_text(encoding="utf-8-sig"))
-        try:
-            config = json.loads(contents)
-        except json.JSONDecodeError as error:
-            raise RuntimeError(f"Unable to read legacy configuration: {config_file}") from error
-        for name, path in mappings.items():
-            section = config
-            for key in path:
-                section = section.get(key) if isinstance(section, dict) else None
-            if section is not None:
-                settings.setdefault(name, str(section))
-    return settings
-
-
-legacy_settings = load_legacy_settings()
-
-
-class ApiError(Exception):
-    def __init__(self, message, status_code=400):
-        super().__init__(message)
-        self.status_code = status_code
-
-
 def setting(name, default=None):
-    return os.getenv(name, legacy_settings.get(name, default))
+    return os.getenv(name, default)
 
 
 def required_settings():
     required = [
-        "DATABASE_CONNECTION_STRING",
+        "DB_SERVER",
+        "DB_PORT",
+        "DB_NAME",
+        "DB_USER",
+        "DB_PASSWORD",
         "SUPABASE_URL",
         "SUPABASE_SECRET_KEY",
         "SUPABASE_BUCKET_NAME",
@@ -86,15 +39,21 @@ def required_settings():
     missing = [key for key in required if not setting(key, "").strip()]
     if missing:
         raise RuntimeError("Missing required configuration settings: " + ", ".join(missing))
-    if "ODBC Driver 18 for SQL Server" not in pyodbc.drivers():
-        raise RuntimeError("Microsoft ODBC Driver 18 for SQL Server is not installed.")
+
+    try:
+        port = int(setting("DB_PORT"))
+        if not 1 <= port <= 65535:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise RuntimeError("DB_PORT must be a valid TCP port between 1 and 65535.")
+
     if not setting("SUPABASE_URL").startswith("https://"):
         raise RuntimeError("SUPABASE_URL must be an HTTPS URL.")
+
     try:
-        allowed_origins = parse_origins(setting("CORS_ALLOWED_ORIGINS"))
+        return parse_origins(setting("CORS_ALLOWED_ORIGINS"))
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
-    return allowed_origins
 
 
 def parse_origins(value):
@@ -104,53 +63,39 @@ def parse_origins(value):
     return origins
 
 
-if setting("APP_ENV", "production").lower() != "development" or setting("DATABASE_CONNECTION_STRING"):
-    # Missing secrets are reported at process startup instead of during the first request.
-    cors_origins = required_settings()
+if setting("APP_ENV", "development").lower() == "development":
+    cors_origins = parse_origins(setting("CORS_ALLOWED_ORIGINS", "http://localhost:5173"))
 else:
-    cors_origins = ["http://localhost:5173"]
+    cors_origins = required_settings()
+
 
 CORS(app, resources={r"/api/*": {"origins": cors_origins}}, allow_headers="*", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
 
 
-@app.errorhandler(ApiError)
-def handle_api_error(error):
-    return jsonify(statusCode=error.status_code, message=str(error)), error.status_code
-
-
-@app.errorhandler(413)
-def handle_large_upload(_error):
-    return jsonify(statusCode=413, message="Poster image must be 8 MB or smaller."), 413
-
-
-@app.errorhandler(Exception)
-def handle_unexpected_error(error):
-    if isinstance(error, HTTPException):
-        return jsonify(statusCode=error.code, message=error.description), error.code
-    logger.exception("Unhandled API error", exc_info=error)
-    return jsonify(statusCode=500, message="An unexpected server error occurred."), 500
+class ApiError(Exception):
+    def __init__(self, message, status_code=400):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def get_connection():
-    connection_string = setting("DATABASE_CONNECTION_STRING")
-    if not connection_string:
-        raise RuntimeError("DATABASE_CONNECTION_STRING is not configured.")
-    connection_string = re.sub(
-        r"(?i)\b(Trusted_Connection|TrustServerCertificate|Encrypt)\s*=\s*(true|false)\b",
-        lambda match: f"{match.group(1)}={'yes' if match.group(2).lower() == 'true' else 'no'}",
-        connection_string,
-    )
-    if "driver=" not in connection_string.lower() and "dsn=" not in connection_string.lower():
-        installed_drivers = pyodbc.drivers()
-        driver = next(
-            (name for name in ("ODBC Driver 18 for SQL Server", "ODBC Driver 17 for SQL Server", "SQL Server")
-             if name in installed_drivers),
-            None,
-        )
-        if driver is None:
-            raise RuntimeError("A Microsoft SQL Server ODBC driver is not installed.")
-        connection_string = f"Driver={{{driver}}};{connection_string}"
-    return pyodbc.connect(connection_string, timeout=10)
+    """Open a SQL Server connection using the pure-Python TDS driver."""
+    connection_options = {
+        "server": setting("DB_SERVER"),
+        "port": int(setting("DB_PORT")),
+        "database": setting("DB_NAME"),
+        "user": setting("DB_USER"),
+        "password": setting("DB_PASSWORD"),
+        "timeout": 10,
+        "login_timeout": 15,
+    }
+
+    # Configure TLS when a CA bundle is supplied by the database provider.
+    ca_file = setting("DB_CA_FILE")
+    if ca_file:
+        connection_options["cafile"] = ca_file
+
+    return pytds.connect(**connection_options)
 
 
 def rows(cursor):
@@ -183,7 +128,9 @@ def execute(sql, params=()):
     with get_connection() as connection:
         cursor = connection.cursor()
         cursor.execute(sql, params)
-        return cursor.rowcount
+        affected_rows = cursor.rowcount
+        connection.commit()
+        return affected_rows
 
 
 def scalar(sql, params=()):
@@ -199,6 +146,7 @@ def execute_insert(sql, params=()):
         cursor = connection.cursor()
         cursor.execute(sql, params)
         row = cursor.fetchone()
+        connection.commit()
         return int(row[0]) if row else None
 
 
@@ -226,7 +174,7 @@ def required_text(value, label):
 
 
 def ensure_exists(table, entity_id, label):
-    if not scalar(f"SELECT COUNT(1) FROM {table} WHERE Id = ?", (entity_id,)):
+    if not scalar(f"SELECT COUNT(1) FROM {table} WHERE Id = %s", (entity_id,)):
         raise ApiError(f"{label} was not found.", 404)
 
 
@@ -244,7 +192,7 @@ def person_from_row(row):
 
 def get_person(table, person_id):
     return query_one(
-        f"SELECT Id AS id, Name AS name, Bio AS bio, DateOfBirth AS dob, Gender AS gender FROM {table} WHERE Id = ?",
+        f"SELECT Id AS id, Name AS name, Bio AS bio, DateOfBirth AS dob, Gender AS gender FROM {table} WHERE Id = %s",
         (person_id,),
     )
 
@@ -277,7 +225,7 @@ def get_body_id_list(data, key, table, label):
         raise ApiError(f"{label} must be a list.")
     ids = [positive_id(value, label) for value in values]
     if ids:
-        placeholders = ",".join("?" for _ in ids)
+        placeholders = ",".join("%s" for _ in ids)
         found = {row["id"] for row in query_all(
             f"SELECT Id AS id FROM {table} WHERE Id IN ({placeholders})", ids
         )}
@@ -290,7 +238,7 @@ def get_body_id_list(data, key, table, label):
 def create_person(table, data):
     name, bio, dob, gender = validate_person(data)
     return execute_insert(
-        f"INSERT INTO {table} (Name, Bio, DateOfBirth, Gender) OUTPUT INSERTED.Id VALUES (?, ?, ?, ?)",
+        f"INSERT INTO {table} (Name, Bio, DateOfBirth, Gender) OUTPUT INSERTED.Id VALUES (%s, %s, %s, %s)",
         (name, bio, dob, gender),
     )
 
@@ -299,14 +247,14 @@ def update_person(table, entity_id, data, label):
     ensure_exists(table, entity_id, label)
     name, bio, dob, gender = validate_person(data)
     execute(
-        f"UPDATE {table} SET Name = ?, Bio = ?, DateOfBirth = ?, Gender = ? WHERE Id = ?",
+        f"UPDATE {table} SET Name = %s, Bio = %s, DateOfBirth = %s, Gender = %s WHERE Id = %s",
         (name, bio, dob, gender, entity_id),
     )
 
 
 def delete_person(table, entity_id, label):
     ensure_exists(table, entity_id, label)
-    execute(f"DELETE FROM {table} WHERE Id = ?", (entity_id,))
+    execute(f"DELETE FROM {table} WHERE Id = %s", (entity_id,))
 
 
 def entity_routes(route, table, label):
@@ -350,7 +298,7 @@ def get_genres():
 @app.get("/api/genres/<int:genre_id>")
 def get_genre(genre_id):
     positive_id(genre_id, "Genre Id")
-    genre = query_one("SELECT Id AS id, Name AS name FROM Foundation.Genres WHERE Id = ?", (genre_id,))
+    genre = query_one("SELECT Id AS id, Name AS name FROM Foundation.Genres WHERE Id = %s", (genre_id,))
     if genre is None:
         raise ApiError("Genre was not found.", 404)
     return jsonify(data=genre)
@@ -360,7 +308,7 @@ def get_genre(genre_id):
 def add_genre():
     name = required_text(body_json().get("name"), "Genre Name")
     genre_id = execute_insert(
-        "INSERT INTO Foundation.Genres (Name) OUTPUT INSERTED.Id VALUES (?)", (name,)
+        "INSERT INTO Foundation.Genres (Name) OUTPUT INSERTED.Id VALUES (%s)", (name,)
     )
     return jsonify(id=genre_id), 201
 
@@ -370,7 +318,7 @@ def update_genre(genre_id):
     positive_id(genre_id, "Genre Id")
     ensure_exists("Foundation.Genres", genre_id, "Genre")
     name = required_text(body_json().get("name"), "Genre Name")
-    execute("UPDATE Foundation.Genres SET Name = ? WHERE Id = ?", (name, genre_id))
+    execute("UPDATE Foundation.Genres SET Name = %s WHERE Id = %s", (name, genre_id))
     return "", 200
 
 
@@ -378,13 +326,13 @@ def update_genre(genre_id):
 def delete_genre(genre_id):
     positive_id(genre_id, "Genre Id")
     ensure_exists("Foundation.Genres", genre_id, "Genre")
-    execute("DELETE FROM Foundation.Genres WHERE Id = ?", (genre_id,))
+    execute("DELETE FROM Foundation.Genres WHERE Id = %s", (genre_id,))
     return "", 204
 
 
 def movie_row(movie_id):
     return query_one(
-        "SELECT Id AS id, Name AS name, YearOfRelease AS yearOfRelease, Plot AS plot, CoverImage AS coverImage, ProducerId AS producerId FROM Foundation.Movies WHERE Id = ?",
+        "SELECT Id AS id, Name AS name, YearOfRelease AS yearOfRelease, Plot AS plot, CoverImage AS coverImage, ProducerId AS producerId FROM Foundation.Movies WHERE Id = %s",
         (movie_id,),
     )
 
@@ -395,12 +343,12 @@ def movie_response(row):
     producer = person_from_row(get_person("Foundation.Producers", row["producerId"]))
     actors = [person_from_row(item) for item in query_all(
         "SELECT a.Id AS id, a.Name AS name, a.Bio AS bio, a.DateOfBirth AS dob, a.Gender AS gender "
-        "FROM Foundation.Actors a INNER JOIN Foundation.Actor_Movies am ON a.Id = am.ActorId WHERE am.MovieId = ?",
+        "FROM Foundation.Actors a INNER JOIN Foundation.Actor_Movies am ON a.Id = am.ActorId WHERE am.MovieId = %s",
         (row["id"],),
     )]
     genres = query_all(
         "SELECT g.Id AS id, g.Name AS name FROM Foundation.Genres g "
-        "INNER JOIN Foundation.Genre_Movies gm ON g.Id = gm.GenreId WHERE gm.MovieId = ?",
+        "INNER JOIN Foundation.Genre_Movies gm ON g.Id = gm.GenreId WHERE gm.MovieId = %s",
         (row["id"],),
     )
     return {
@@ -432,7 +380,7 @@ def get_movies():
         )
     else:
         found = query_all(
-            "SELECT Id AS id, Name AS name, YearOfRelease AS yearOfRelease, Plot AS plot, CoverImage AS coverImage, ProducerId AS producerId FROM Foundation.Movies WHERE YearOfRelease = ?",
+            "SELECT Id AS id, Name AS name, YearOfRelease AS yearOfRelease, Plot AS plot, CoverImage AS coverImage, ProducerId AS producerId FROM Foundation.Movies WHERE YearOfRelease = %s",
             (year,),
         )
     return jsonify(data=[movie_response(row) for row in found])
@@ -455,7 +403,7 @@ def movie_ids(data):
 
 def has_duplicate_movie(name, year, except_id=None):
     return bool(scalar(
-        "SELECT COUNT(1) FROM Foundation.Movies WHERE LOWER(LTRIM(RTRIM(Name))) = LOWER(LTRIM(RTRIM(?))) AND YearOfRelease = ? AND (? IS NULL OR Id <> ?)",
+        "SELECT COUNT(1) FROM Foundation.Movies WHERE LOWER(LTRIM(RTRIM(Name))) = LOWER(LTRIM(RTRIM(%s))) AND YearOfRelease = %s AND (%s IS NULL OR Id <> %s)",
         (name, year, except_id, except_id),
     ))
 
@@ -471,7 +419,7 @@ def add_movie():
     with get_connection() as connection:
         cursor = connection.cursor()
         cursor.execute(
-            "EXEC Foundation.usp_AddMovie @Name=?, @YearOfRelease=?, @Plot=?, @CoverImage=?, @ProducerId=?, @ActorIds=?, @GenreIds=?",
+            "EXEC Foundation.usp_AddMovie @Name=%s, @YearOfRelease=%s, @Plot=%s, @CoverImage=%s, @ProducerId=%s, @ActorIds=%s, @GenreIds=%s",
             (name, year, plot, cover_image, producer_id, ",".join(map(str, actors)), ",".join(map(str, genres))),
         )
         while cursor.description is None:
@@ -481,6 +429,7 @@ def add_movie():
         if row is None:
             raise RuntimeError("Movie create procedure did not return the new movie ID.")
         movie_id = int(row[0])
+        connection.commit()
     return jsonify(data={"id": movie_id}), 201
 
 
@@ -498,9 +447,10 @@ def update_movie(movie_id):
     with get_connection() as connection:
         cursor = connection.cursor()
         cursor.execute(
-            "EXEC Foundation.usp_UpdateMovie @Id=?, @Name=?, @YearOfRelease=?, @Plot=?, @CoverImage=?, @ProducerId=?, @ActorIds=?, @GenreIds=?",
+            "EXEC Foundation.usp_UpdateMovie @Id=%s, @Name=%s, @YearOfRelease=%s, @Plot=%s, @CoverImage=%s, @ProducerId=%s, @ActorIds=%s, @GenreIds=%s",
             (movie_id, name, year, plot, cover_image, producer_id, ",".join(map(str, actors)), ",".join(map(str, genres))),
         )
+        connection.commit()
     return "", 200
 
 
@@ -510,10 +460,11 @@ def delete_movie(movie_id):
     ensure_exists("Foundation.Movies", movie_id, "Movie")
     with get_connection() as connection:
         cursor = connection.cursor()
-        cursor.execute("DELETE FROM Foundation.Actor_Movies WHERE MovieId = ?", (movie_id,))
-        cursor.execute("DELETE FROM Foundation.Genre_Movies WHERE MovieId = ?", (movie_id,))
-        cursor.execute("DELETE FROM Foundation.Reviews WHERE MovieId = ?", (movie_id,))
-        cursor.execute("DELETE FROM Foundation.Movies WHERE Id = ?", (movie_id,))
+        cursor.execute("DELETE FROM Foundation.Actor_Movies WHERE MovieId = %s", (movie_id,))
+        cursor.execute("DELETE FROM Foundation.Genre_Movies WHERE MovieId = %s", (movie_id,))
+        cursor.execute("DELETE FROM Foundation.Reviews WHERE MovieId = %s", (movie_id,))
+        cursor.execute("DELETE FROM Foundation.Movies WHERE Id = %s", (movie_id,))
+        connection.commit()
     return "", 204
 
 
@@ -544,7 +495,7 @@ def update_poster(movie_id):
         logger.error("Supabase poster upload failed with HTTP %s", response.status_code)
         raise ApiError("Unable to upload poster image.", 502)
     public_url = f"{base_url}/storage/v1/object/public/{bucket}/{path}"
-    execute("UPDATE Foundation.Movies SET CoverImage = ? WHERE Id = ?", (public_url, movie_id))
+    execute("UPDATE Foundation.Movies SET CoverImage = %s WHERE Id = %s", (public_url, movie_id))
     return jsonify(data=public_url)
 
 
@@ -552,7 +503,7 @@ def update_poster(movie_id):
 def get_movie_reviews(movie_id):
     positive_id(movie_id, "Movie Id")
     found = query_all(
-        "SELECT Id AS id, Message AS message, MovieId AS movieId FROM Foundation.Reviews WHERE MovieId = ?",
+        "SELECT Id AS id, Message AS message, MovieId AS movieId FROM Foundation.Reviews WHERE MovieId = %s",
         (movie_id,),
     )
     return jsonify(data=found)
@@ -563,7 +514,7 @@ def get_movie_review(movie_id, review_id):
     positive_id(movie_id, "Movie Id")
     positive_id(review_id, "Review Id")
     result = query_one(
-        "SELECT Id AS id, Message AS message, MovieId AS movieId FROM Foundation.Reviews WHERE Id = ? AND MovieId = ?",
+        "SELECT Id AS id, Message AS message, MovieId AS movieId FROM Foundation.Reviews WHERE Id = %s AND MovieId = %s",
         (review_id, movie_id),
     )
     if result is None:
@@ -575,7 +526,7 @@ def get_movie_review(movie_id, review_id):
 def get_user_reviews(user_id):
     positive_id(user_id, "User Id")
     found = query_all(
-        "SELECT Id AS id, Message AS message, MovieId AS movieId FROM Foundation.Reviews WHERE UserId = ?",
+        "SELECT Id AS id, Message AS message, MovieId AS movieId FROM Foundation.Reviews WHERE UserId = %s",
         (user_id,),
     )
     return jsonify(data=found)
@@ -589,7 +540,7 @@ def add_review(movie_id):
     user_id = positive_id(data.get("userid"), "User Id")
     ensure_exists("Foundation.Users", user_id, "User")
     review_id = execute_insert(
-        "INSERT INTO Foundation.Reviews (Message, MovieId, UserId) OUTPUT INSERTED.Id VALUES (?, ?, ?)",
+        "INSERT INTO Foundation.Reviews (Message, MovieId, UserId) OUTPUT INSERTED.Id VALUES (%s, %s, %s)",
         (message, movie_id, user_id),
     )
     return jsonify(id=review_id), 201
@@ -603,7 +554,7 @@ def update_review(movie_id, review_id):
     message = required_text(data.get("message"), "Review Message")
     ensure_exists("Foundation.Reviews", review_id, "Review")
     execute(
-        "UPDATE Foundation.Reviews SET Message = ? WHERE Id = ? AND MovieId = ?",
+        "UPDATE Foundation.Reviews SET Message = %s WHERE Id = %s AND MovieId = %s",
         (message, review_id, movie_id),
     )
     return "", 200
@@ -614,94 +565,8 @@ def delete_review(movie_id, review_id):
     positive_id(movie_id, "Movie Id")
     positive_id(review_id, "Review Id")
     ensure_exists("Foundation.Reviews", review_id, "Review")
-    execute("DELETE FROM Foundation.Reviews WHERE Id = ? AND MovieId = ?", (review_id, movie_id))
+    execute("DELETE FROM Foundation.Reviews WHERE Id = %s AND MovieId = %s", (review_id, movie_id))
     return "", 204
-
-
-def jwt_for_user(user_id, email):
-    secret = setting("JWT_SECRET")
-    if not secret:
-        raise ApiError("JWT authentication is not configured.", 503)
-    now = datetime.now(timezone.utc)
-    return jwt.encode(
-        {"nameid": str(user_id), "email": email, "iss": setting("JWT_ISSUER", "IMDB_API"),
-         "aud": setting("JWT_AUDIENCE", "IMDB_API"), "iat": now,
-         "exp": now + timedelta(minutes=int(setting("JWT_EXPIRY_MINUTES", "60")))},
-        secret, algorithm="HS256",
-    )
-
-
-def require_jwt_configuration():
-    if not setting("JWT_SECRET"):
-        raise ApiError("JWT authentication is not configured.", 503)
-
-
-def validate_email(email):
-    if not isinstance(email, str) or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email.strip()):
-        raise ApiError("Invalid Email Id.")
-    return email.strip()
-
-
-def validate_password(password):
-    if not isinstance(password, str) or not password:
-        raise ApiError("Password is Empty.")
-    if len(password) < 8:
-        raise ApiError("Password must contain at least 8 characters.")
-    if not any(character.isdigit() for character in password):
-        raise ApiError("Password must contain at least one number.")
-    if not any(not character.isalnum() for character in password):
-        raise ApiError("Password must contain at least one special character.")
-
-
-@app.post("/api/auth/signup")
-def signup():
-    require_jwt_configuration()
-    data = body_json()
-    name = required_text(data.get("name"), "User Name")
-    email = validate_email(data.get("emailid"))
-    password = data.get("password")
-    validate_password(password)
-    if query_one("SELECT Id AS id FROM Foundation.Users WHERE Email = ?", (email,)):
-        raise ApiError("Email Id already exists.")
-    password_hash = generate_password_hash(password, method="pbkdf2:sha256:260000:20", salt_length=8)
-    user_id = execute_insert(
-        "INSERT INTO Foundation.Users (Name, Email, Password) OUTPUT INSERTED.Id VALUES (?, ?, ?)",
-        (name, email, password_hash),
-    )
-    return jsonify(data={"accessToken": jwt_for_user(user_id, email)})
-
-
-@app.post("/api/auth/login")
-def login():
-    require_jwt_configuration()
-    data = body_json()
-    email = validate_email(data.get("emailid"))
-    password = data.get("password")
-    validate_password(password)
-    user = query_one(
-        "SELECT Id AS id, Email AS email, Password AS password FROM Foundation.Users WHERE Email = ?",
-        (email,),
-    )
-    if user is None:
-        raise ApiError("Invalid credentials.")
-    stored = user["password"] or ""
-    valid = False
-    if stored.startswith("pbkdf2:") or stored.startswith("scrypt:"):
-        try:
-            valid = check_password_hash(stored, password)
-        except (ValueError, TypeError):
-            valid = False
-    else:
-        # Accept accounts created by the previous API and upgrade their stored password hash.
-        valid = secrets.compare_digest(stored, password)
-        if valid:
-            execute(
-                "UPDATE Foundation.Users SET Password = ? WHERE Id = ?",
-                (generate_password_hash(password, method="pbkdf2:sha256:260000:20", salt_length=8), user["id"]),
-            )
-    if not valid:
-        raise ApiError("Invalid credentials.")
-    return jsonify(data={"accessToken": jwt_for_user(user["id"], user["email"])})
 
 
 @app.get("/")
@@ -715,5 +580,6 @@ def health():
 
 
 if __name__ == "__main__":
-    required_settings()
+    if setting("APP_ENV", "development").lower() != "development":
+        required_settings()
     app.run(host=setting("HOST", "0.0.0.0"), port=int(setting("PORT", "10000")))
