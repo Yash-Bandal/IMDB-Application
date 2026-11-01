@@ -80,6 +80,14 @@ class ApiError(Exception):
 @app.errorhandler(ApiError)
 def handle_api_error(error):
     return jsonify(error=str(error)), error.status_code
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(error):
+    if isinstance(error, HTTPException):
+        return error
+
+    logger.exception("Unhandled application error")
+    return jsonify(error="Internal server error"), 500
     
 def get_connection():
     """Open a SQL Server connection using the pure-Python TDS driver."""
