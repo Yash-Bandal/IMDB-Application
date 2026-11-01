@@ -77,7 +77,10 @@ class ApiError(Exception):
         super().__init__(message)
         self.status_code = status_code
 
-
+@app.errorhandler(ApiError)
+def handle_api_error(error):
+    return jsonify(error=str(error)), error.status_code
+    
 def get_connection():
     """Open a SQL Server connection using the pure-Python TDS driver."""
     connection_options = {
@@ -438,11 +441,13 @@ def movie_responses(movie_rows):
 def validate_movie(data):
     name = required_text(data.get("name"), "Movie Name")
     plot = required_text(data.get("plot"), "Movie Plot")
-    year = positive_id(data.get("yearOfRelease"), "Year of Release")
-    producer_id = positive_id(data.get("producerId"), "Producer Id")
-    cover_image = data.get("coverImage") or ""
+    year = positive_id(data.get("yearofrelease"), "Year of Release")
+    producer_id = positive_id(data.get("producerid"), "Producer Id")
+
+    cover_image = data.get("coverimage") or ""
     if not isinstance(cover_image, str):
         raise ApiError("Cover Image must be a string.")
+
     return name, year, plot, cover_image, producer_id
 
 
