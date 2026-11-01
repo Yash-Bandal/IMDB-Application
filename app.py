@@ -358,6 +358,83 @@ def movie_response(row):
     }
 
 
+def movie_responses(movie_rows):
+    if not movie_rows:
+        return []
+
+    movie_ids = [row["id"] for row in movie_rows]
+    producer_ids = list({row["producerId"] for row in movie_rows})
+
+    movie_placeholders = ",".join("%s" for _ in movie_ids)
+    producer_placeholders = ",".join("%s" for _ in producer_ids)
+
+    # Fetch all producers in one query
+    producers = query_all(
+        f"""
+        SELECT Id AS id, Name AS name, Bio AS bio,
+               DateOfBirth AS dob, Gender AS gender
+        FROM Foundation.Producers
+        WHERE Id IN ({producer_placeholders})
+        """,
+        tuple(producer_ids)
+    )
+    producer_map = {p["id"]: person_from_row(p) for p in producers}
+
+    # Fetch all actors associated with these movies
+    actor_rows = query_all(
+        f"""
+        SELECT am.MovieId AS movieId,
+               a.Id AS id, a.Name AS name, a.Bio AS bio,
+               a.DateOfBirth AS dob, a.Gender AS gender
+        FROM Foundation.Actors a
+        INNER JOIN Foundation.Actor_Movies am ON a.Id = am.ActorId
+        WHERE am.MovieId IN ({movie_placeholders})
+        """,
+        tuple(movie_ids)
+    )
+
+    # Fetch all genres associated with these movies
+    genre_rows = query_all(
+        f"""
+        SELECT gm.MovieId AS movieId,
+               g.Id AS id, g.Name AS name
+        FROM Foundation.Genres g
+        INNER JOIN Foundation.Genre_Movies gm ON g.Id = gm.GenreId
+        WHERE gm.MovieId IN ({movie_placeholders})
+        """,
+        tuple(movie_ids)
+    )
+
+    # Group actors by movie
+    actors_map = {}
+    for actor in actor_rows:
+        movie_id = actor.pop("movieId")
+        actors_map.setdefault(movie_id, []).append(person_from_row(actor))
+
+    # Group genres by movie
+    genres_map = {}
+    for genre in genre_rows:
+        movie_id = genre.pop("movieId")
+        genres_map.setdefault(movie_id, []).append(genre)
+
+    # Build final response
+    result = []
+
+    for row in movie_rows:
+        result.append({
+            "id": row["id"],
+            "name": row["name"],
+            "yearOfRelease": row["yearOfRelease"],
+            "plot": row.get("plot"),
+            "coverImage": row.get("coverImage"),
+            "producer": producer_map.get(row["producerId"]),
+            "actors": actors_map.get(row["id"], []),
+            "genres": genres_map.get(row["id"], [])
+        })
+
+    return result
+
+
 def validate_movie(data):
     name = required_text(data.get("name"), "Movie Name")
     plot = required_text(data.get("plot"), "Movie Plot")
@@ -383,7 +460,7 @@ def get_movies():
             "SELECT Id AS id, Name AS name, YearOfRelease AS yearOfRelease, Plot AS plot, CoverImage AS coverImage, ProducerId AS producerId FROM Foundation.Movies WHERE YearOfRelease = %s",
             (year,),
         )
-    return jsonify(data=[movie_response(row) for row in found])
+    return jsonify(data=movie_responses(found))
 
 
 @app.get("/api/movies/<int:movie_id>")
