@@ -520,7 +520,7 @@ def add_movie():
             raise RuntimeError("Movie create procedure did not return the new movie ID.")
         movie_id = int(row[0])
         connection.commit()
-    return jsonify(data={"id": movie_id}), 201
+    return jsonify(id=movie_id), 201
 
 
 @app.put("/api/movies/<int:movie_id>")
