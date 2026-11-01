@@ -21,12 +21,10 @@ curl -fsSLo "$temporary_directory/packages-microsoft-prod.deb" \
     https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb
 
 "${SUDO[@]}" dpkg -i "$temporary_directory/packages-microsoft-prod.deb"
-
 "${SUDO[@]}" apt-get update
 
 "${SUDO[@]}" env ACCEPT_EULA=Y DEBIAN_FRONTEND=noninteractive \
-    apt-get install -y --no-install-recommends \
-    msodbcsql18 unixodbc-dev
+    apt-get install -y --no-install-recommends msodbcsql18 unixodbc-dev
 
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
