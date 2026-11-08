@@ -557,36 +557,115 @@ def delete_movie(movie_id):
         connection.commit()
     return "", 204
 
-
-@app.put("/api/movies/<int:movie_id>/poster")
-def update_poster(movie_id):
-    positive_id(movie_id, "Movie Id")
-    ensure_exists("Foundation.Movies", movie_id, "Movie")
-    image = request.files.get("file")
+def upload_poster_to_supabase(image, folder):
     if image is None or not image.filename:
         raise ApiError("Poster image is required.")
+
     if not image.mimetype or not image.mimetype.startswith("image/"):
         raise ApiError("Please select a valid image file.")
+
     extension = os.path.splitext(image.filename)[1].lower()
+
     if not re.fullmatch(r"\.[a-z0-9]{1,8}", extension):
         extension = ".img"
+
     filename = f"{uuid.uuid4()}{extension}"
+
     bucket = quote(setting("SUPABASE_BUCKET_NAME"), safe="")
-    path = f"movies/{movie_id}/{filename}"
+    path = f"{folder}/{filename}"
+
     base_url = setting("SUPABASE_URL").rstrip("/")
-    upload_url = f"{base_url}/storage/v1/object/{bucket}/{path}"
+
+    upload_url = (
+        f"{base_url}/storage/v1/object/{bucket}/{path}"
+    )
+
     headers = {
         "apikey": setting("SUPABASE_SECRET_KEY"),
         "Authorization": f"Bearer {setting('SUPABASE_SECRET_KEY')}",
         "Content-Type": image.mimetype,
     }
-    response = requests.post(upload_url, data=image.stream, headers=headers, timeout=30)
+
+    response = requests.post(
+        upload_url,
+        data=image.stream,
+        headers=headers,
+        timeout=30,
+    )
+
     if not response.ok:
-        logger.error("Supabase poster upload failed with HTTP %s", response.status_code)
+        logger.error(
+            "Supabase poster upload failed with HTTP %s",
+            response.status_code,
+        )
         raise ApiError("Unable to upload poster image.", 502)
-    public_url = f"{base_url}/storage/v1/object/public/{bucket}/{path}"
-    execute("UPDATE Foundation.Movies SET CoverImage = %s WHERE Id = %s", (public_url, movie_id))
-    return jsonify(data=public_url)
+
+    public_url = (
+        f"{base_url}/storage/v1/object/public/{bucket}/{path}"
+    )
+
+    return public_url
+
+
+# Upload poster before creating a movie
+@app.post("/api/movies/poster")
+def upload_poster():
+    image = request.files.get("file")
+
+    image_url = upload_poster_to_supabase(image, "movies")
+
+    return jsonify(data=image_url)
+
+
+# Upload or replace poster for an existing movie
+@app.put("/api/movies/<int:movie_id>/poster")
+def update_poster(movie_id):
+    positive_id(movie_id, "Movie Id")
+    ensure_exists("Foundation.Movies", movie_id, "Movie")
+
+    image = request.files.get("file")
+
+    image_url = upload_poster_to_supabase(
+        image,
+        f"movies/{movie_id}",
+    )
+
+    execute(
+        "UPDATE Foundation.Movies SET CoverImage = %s WHERE Id = %s",
+        (image_url, movie_id),
+    )
+
+    return jsonify(data=image_url)
+    
+# @app.put("/api/movies/<int:movie_id>/poster")
+# def update_poster(movie_id):
+#     positive_id(movie_id, "Movie Id")
+#     ensure_exists("Foundation.Movies", movie_id, "Movie")
+#     image = request.files.get("file")
+#     if image is None or not image.filename:
+#         raise ApiError("Poster image is required.")
+#     if not image.mimetype or not image.mimetype.startswith("image/"):
+#         raise ApiError("Please select a valid image file.")
+#     extension = os.path.splitext(image.filename)[1].lower()
+#     if not re.fullmatch(r"\.[a-z0-9]{1,8}", extension):
+#         extension = ".img"
+#     filename = f"{uuid.uuid4()}{extension}"
+#     bucket = quote(setting("SUPABASE_BUCKET_NAME"), safe="")
+#     path = f"movies/{movie_id}/{filename}"
+#     base_url = setting("SUPABASE_URL").rstrip("/")
+#     upload_url = f"{base_url}/storage/v1/object/{bucket}/{path}"
+#     headers = {
+#         "apikey": setting("SUPABASE_SECRET_KEY"),
+#         "Authorization": f"Bearer {setting('SUPABASE_SECRET_KEY')}",
+#         "Content-Type": image.mimetype,
+#     }
+#     response = requests.post(upload_url, data=image.stream, headers=headers, timeout=30)
+#     if not response.ok:
+#         logger.error("Supabase poster upload failed with HTTP %s", response.status_code)
+#         raise ApiError("Unable to upload poster image.", 502)
+#     public_url = f"{base_url}/storage/v1/object/public/{bucket}/{path}"
+#     execute("UPDATE Foundation.Movies SET CoverImage = %s WHERE Id = %s", (public_url, movie_id))
+#     return jsonify(data=public_url)
 
 
 @app.get("/api/movies/<int:movie_id>/reviews")
