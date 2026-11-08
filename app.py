@@ -2,12 +2,17 @@ import logging
 import os
 import re
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
+
+
+import jwt
+from functools import wraps
+
 
 import pytds
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, g
 from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.exceptions import HTTPException
@@ -35,6 +40,11 @@ def required_settings():
         "SUPABASE_SECRET_KEY",
         "SUPABASE_BUCKET_NAME",
         "CORS_ALLOWED_ORIGINS",
+        
+        "JWT_SECRET_KEY",
+        "JWT_ISSUER",
+        "JWT_AUDIENCE",
+        "JWT_EXPIRY_MINUTES",
     ]
     missing = [key for key in required if not setting(key, "").strip()]
     if missing:
@@ -46,6 +56,14 @@ def required_settings():
             raise ValueError
     except (TypeError, ValueError):
         raise RuntimeError("DB_PORT must be a valid TCP port between 1 and 65535.")
+        
+    # added now
+    try:
+        expiry = int(setting("JWT_EXPIRY_MINUTES"))
+        if expiry <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise RuntimeError("JWT_EXPIRY_MINUTES must be a positive integer.")
 
     if not setting("SUPABASE_URL").startswith("https://"):
         raise RuntimeError("SUPABASE_URL must be an HTTPS URL.")
@@ -88,7 +106,48 @@ def handle_unexpected_error(error):
 
     logger.exception("Unhandled application error")
     return jsonify(error="Internal server error"), 500
+
+@app.before_request
+def authenticate_request():
+    print("REQUEST RECEIVED:", request.method, request.path)
+    print("JWT SECRET EXISTS:", bool(setting("JWT_SECRET_KEY")))
+    print("JWT ISSUER:", setting("JWT_ISSUER"))
     
+    # Allow browser CORS preflight requests
+    if request.method == "OPTIONS":
+        return None
+
+    # Login must be accessible without an existing token
+    if request.path == "/api/auth/login":
+        return None
+
+    # Protect all other API endpoints
+    if request.path.startswith("/api/"):
+
+        auth_header = request.headers.get("Authorization", "")
+
+        if not auth_header.startswith("Bearer "):
+            return jsonify(
+                error="Authentication token is required."
+            ), 401
+
+        token = auth_header.split(" ", 1)[1].strip()
+
+        try:
+            g.current_user = jwt.decode(
+                token,
+                setting("JWT_SECRET_KEY"),
+                algorithms=["HS256"],
+                issuer=setting("JWT_ISSUER"),
+                audience=setting("JWT_AUDIENCE"),
+            )
+
+        except jwt.ExpiredSignatureError:
+            return jsonify(error="Token expired."), 401
+
+        except jwt.InvalidTokenError:
+            return jsonify(error="Invalid token."), 401
+        
 def get_connection():
     """Open a SQL Server connection using the pure-Python TDS driver."""
     connection_options = {
@@ -109,6 +168,28 @@ def get_connection():
     return pytds.connect(**connection_options)
 
 
+def generate_token(user):
+    now = datetime.now(timezone.utc)
+
+    payload = {
+        "nameid": str(user["id"]),
+        "email": user["email"],
+        "iss": setting("JWT_ISSUER"),
+        "aud": setting("JWT_AUDIENCE"),
+        "iat": now,
+        "exp": now + timedelta(
+            minutes=int(setting("JWT_EXPIRY_MINUTES"))
+        ),
+    }
+
+    token = jwt.encode(
+        payload,
+        setting("JWT_SECRET_KEY"),
+        algorithm="HS256"
+    )
+
+    return token
+    
 def rows(cursor):
     names = [column[0] for column in cursor.description or []]
     result = []
@@ -167,6 +248,37 @@ def body_json():
         raise ApiError("A JSON object is required.")
     return {str(key).lower(): value for key, value in data.items()}
 
+@app.post("/api/auth/login")
+def login():
+    data = body_json()
+
+    email = required_text(data.get("emailid"), "Email Id")
+    password = required_text(data.get("password"), "Password")
+
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise ApiError("Invalid Email Id.")
+
+    user = query_one(
+        """
+        SELECT
+            Id AS id,
+            Name AS name,
+            Email AS email,
+            Password AS password
+        FROM Foundation.Users
+        WHERE Email = %s
+        """,
+        (email,)
+    )
+
+    if user is None or user["password"] != password:
+        raise ApiError("Invalid credentials.", 401)
+
+    token = generate_token(user)
+
+    return jsonify(data={
+        "accessToken": token
+    })
 
 def positive_id(value, label):
     try:
