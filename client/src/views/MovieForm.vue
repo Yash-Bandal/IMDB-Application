@@ -1,5 +1,3 @@
-
-
 <template>
   <v-container fluid class="movie-form-container">
 
@@ -14,6 +12,7 @@
       </p>
     </div>
 
+    <!-- Error area -->
     <v-alert
       v-if="error"
       type="error"
@@ -23,11 +22,23 @@
       {{ error }}
     </v-alert>
 
+    <!-- Form Loading -->
+    <div
+      v-if="loadingForm"
+      class="d-flex justify-center align-center py-10"
+    >
+      <LoadingSpinner/>
+    </div>
+
     <!-- Movie Form -->
-    <v-card class="form-card" variant="flat">
+      <v-card
+        v-else
+        class="form-card"
+        variant="flat"
+      >
 
       <v-card-text class="pa-0">
-        <v-form @submit.prevent="handleSubmit">
+        <v-form  ref="movieForm" @submit.prevent="handleSubmit">
 
           <v-row class="py-2">
 
@@ -54,8 +65,8 @@
                 density="comfortable"
                 :rules="[
                   value => !!value || 'Release year is required',
-                  value => Number(value) >= 1888 || 'Enter a valid release year',
-                  value => Number(value) <= new Date().getFullYear() || 'Year cannot be in the future',
+                  value => Number(value) >= 0 || 'Enter a valid release year',
+                  // value => Number(value) <= new Date().getFullYear() || 'Year cannot be in the future',
                 ]"
                 required
                 :disabled="saving"
@@ -82,7 +93,7 @@
               <div class="d-flex align-start ga-2">
                 <v-select
                   v-model="form.producerId"
-                  :items="producers"
+                  :items="allProducers"
                   item-title="name"
                   item-value="id"
                   label="Producer"
@@ -113,7 +124,7 @@
               <div class="d-flex align-start ga-2">
                 <v-select
                   v-model="form.actorIds"
-                  :items="actors"
+                  :items="allActors"
                   item-title="name"
                   item-value="id"
                   label="Actors"
@@ -123,6 +134,7 @@
                   chips
                   closable-chips
                   class="flex-grow-1"
+                  :rules="[value => value?.length > 0 || 'Select at least one actor']"
                   :disabled="saving"
                 />
 
@@ -144,7 +156,7 @@
             <v-col cols="12">
               <v-select
                 v-model="form.genreIds"
-                :items="genres"
+                :items="allGenres"
                 item-title="name"
                 item-value="id"
                 label="Genres"
@@ -153,6 +165,7 @@
                 multiple
                 chips
                 closable-chips
+                :rules="[value => value?.length > 0 || 'Select at least one genre']"
                 :disabled="saving"
               />
             </v-col>
@@ -166,17 +179,16 @@
                 </span>
               </div>
 
-              <v-file-input
-                v-model="posterFile"
-                label="Choose poster image"
+              <input
+                type="file"
                 accept="image/*"
-                prepend-icon="mdi-image-outline"
-                variant="outlined"
-                density="comfortable"
-                show-size
-                clearable
+                class="poster-file-input"
                 :disabled="saving"
+                @change="handlePosterChange"
               />
+              <div v-if="posterError" class="text-error text-caption mt-1">
+                {{ posterError }}
+              </div>
 
               <v-img
                 v-if="posterPreview"
@@ -229,32 +241,44 @@
 </template>
 
 <script setup lang="ts">
+// Dependencies
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 
-import { useAppStore } from '../stores/store'
-import { uploadMoviePoster } from '../services/movieService'
+// Modules
+import {
+  useMovieStore,
+  useActorStore,
+  useProducerStore,
+  useGenreStore,
+} from '../stores'
 
-import type { MovieRequest } from '../types/movie'
+import type { MovieRequest } from '../types'
 
+// Components
 import PersonFormDialog from '../components/shared/PersonFormDialog.vue'
+import LoadingSpinner from '../components/shared/LoadingSpinner.vue'
 
 const route = useRoute()
 const router = useRouter()
-const store = useAppStore()
 
-const {
-  actors,
-  producers,
-  genres,
-  error,
-  savingMovie,
-} = storeToRefs(store)
+// Stores
+const movieStore = useMovieStore()
+const actorStore = useActorStore()
+const producerStore = useProducerStore()
+const genreStore = useGenreStore()
+
+// Store State
+const { allActors } = storeToRefs(actorStore)
+const { allProducers } = storeToRefs(producerStore)
+const { allGenres } = storeToRefs(genreStore)
+const { selectedMovie } = storeToRefs(movieStore)
 
 const isEditMode = computed(() => route.params.id !== undefined)
 
 const saving = ref(false)
+const loadingForm = ref(true)
 
 const showPersonDialog = ref(false)
 const personDialogType = ref<'actor' | 'producer'>('actor')
@@ -262,24 +286,47 @@ const personDialogType = ref<'actor' | 'producer'>('actor')
 const posterFile = ref<File | null>(null)
 const posterPreview = ref('')
 
+const movieForm = ref()
+
+const posterError = ref('')
+const error = ref('')
+
 const form = ref<MovieRequest>({
   name: '',
   yearOfRelease: new Date().getFullYear(),
   plot: '',
   coverImage: '',
-  producerId: 0,
+  producerId: null as number | null,
   actorIds: [],
   genreIds: [],
 })
 
 watch(posterFile, (file) => {
+  // Clean up the previous preview URL 
   if (posterPreview.value.startsWith('blob:')) {
     URL.revokeObjectURL(posterPreview.value)
   }
 
-  posterPreview.value = file
-    ? URL.createObjectURL(file)
-    : ''
+  posterPreview.value = ''
+
+  // No file selected (Stop callback)
+  if (!file){
+    return
+  } 
+
+  // Validate file type
+  if (!file.type.startsWith('image/')) {
+    error.value =
+      'Invalid file. Please select an image (JPG, PNG, GIF, WEBP, etc.).'
+
+    // Reject the invalid file
+    posterFile.value = null
+    return
+  }
+
+  // Valid image selected
+  error.value = ''
+  posterPreview.value = URL.createObjectURL(file)
 })
 
 onUnmounted(() => {
@@ -289,27 +336,39 @@ onUnmounted(() => {
 })
 
 onMounted(async () => {
+  loadingForm.value = true
+
   try {
+    // Fetch Entities
     await Promise.all([
-      store.fetchPeople(),
-      store.fetchGenres(),
+      actorStore.fetchActors(),
+      producerStore.fetchProducers(),
+      genreStore.fetchGenres(),
     ])
 
+    // Determine If Edit Mode
     if (isEditMode.value) {
+      // get id from route
       const movieId = getValidMovieId()
 
       if (movieId === null) {
         throw new Error('Invalid movie ID in URL.')
       }
 
-      const movie = await store.fetchMovieById(movieId)
+      await movieStore.fetchMovieById(movieId)
+
+      if (!selectedMovie.value) {
+        throw new Error('Movie not found.')
+      }
+
+      const movie = selectedMovie.value;
 
       form.value = {
         name: movie.name,
         yearOfRelease: movie.yearOfRelease,
         plot: movie.plot ?? '',
         coverImage: movie.coverImage ?? '',
-        producerId: movie.producer?.id ?? 0,
+        producerId: movie.producer?.id ?? null,
         actorIds: movie.actors.map(actor => actor.id),
         genreIds: movie.genres.map(genre => genre.id),
       }
@@ -319,6 +378,8 @@ onMounted(async () => {
   } catch (err) {
     error.value =
       err instanceof Error ? err.message : 'Failed to load movie form data.'
+  } finally {
+    loadingForm.value = false
   }
 })
 
@@ -327,6 +388,7 @@ function openPersonDialog(type: 'actor' | 'producer') {
   showPersonDialog.value = true
 }
 
+// On Adding Actor/Producer Add it to Form -> ActorId[] 
 function handlePersonSaved(personId: number) {
   if (personDialogType.value === 'actor') {
     if (!form.value.actorIds.includes(personId)) {
@@ -347,40 +409,58 @@ function getValidMovieId(): number | null {
   return id
 }
 
+function handlePosterChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0] ?? null
+
+  posterError.value = ''
+
+  if (!file) {
+    posterFile.value = null
+    return
+  }
+
+  if (!file.type.startsWith('image/')) {
+    posterError.value = 'Please select a valid image file.'
+    posterFile.value = null
+
+    // Clear the invalid selection from the input
+    input.value = ''
+    return
+  }
+
+  posterFile.value = file
+}
+
 async function handleSubmit() {
-  if (saving.value) return
+  // If already saving, cant submit 
+  if (saving.value){
+    return
+  }
 
   error.value = ''
 
-  if (!form.value.name.trim()) {
-    error.value = 'Movie name is required.'
-    return
-  }
+  // 1. Validate all form fields
+  const { valid } = await movieForm.value!.validate()
 
-  if (!form.value.yearOfRelease || form.value.yearOfRelease < 1888 ||
-      form.value.yearOfRelease > new Date().getFullYear()) {
-    error.value = 'Please enter a valid release year.'
+  if (!valid)
+  {
     return
-  }
-
-  if (!form.value.plot.trim()) {
-    error.value = 'Movie plot is required.'
-    return
-  }
-
-  if (!form.value.producerId) {
-    error.value = 'Please select a producer.'
-    return
-  }
-
-  if (posterFile.value && !posterFile.value.type.startsWith('image/')) {
-    error.value = 'Please select a valid image file.'
-    return
-  }
+  } 
 
   saving.value = true
 
+  // If edit mode, perform updation
   try {
+    // 1. Upload poster first, if selected
+    if (posterFile.value) {
+      const imageUrl = await movieStore.uploadMoviePoster(posterFile.value)
+
+      // 2. Add the returned URL to MovieRequest
+      form.value.coverImage = imageUrl
+    }
+
+    // 3. Create or update movie
     if (isEditMode.value) {
       const movieId = getValidMovieId()
 
@@ -388,28 +468,9 @@ async function handleSubmit() {
         throw new Error('Invalid movie ID in URL.')
       }
 
-      await store.editMovie(movieId, form.value)
-
-      if (posterFile.value) {
-        await uploadMoviePoster(movieId, posterFile.value)
-      }
+      await movieStore.editMovie(movieId, form.value)
     } else {
-      const createdMovie = await store.addMovie(form.value)
-
-      if (posterFile.value) {
-        const result = createdMovie as {
-          data?: { id?: number }
-          id?: number
-        }
-
-        const movieId = result?.data?.id ?? result?.id
-
-        if (movieId === undefined) {
-          throw new Error('Movie created, but ID was not returned.')
-        }
-
-        await uploadMoviePoster(movieId, posterFile.value)
-      }
+      await movieStore.addMovie(form.value)
     }
 
     await router.push('/movies')
@@ -454,6 +515,13 @@ async function handleSubmit() {
   letter-spacing: 0;
 }
 
+.poster-file-input {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #bdbdbd;
+  border-radius: 6px;
+  font-size: 14px;
+}
 
 /* Tablet */
 @media (max-width: 960px) {

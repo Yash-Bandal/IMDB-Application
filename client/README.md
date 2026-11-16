@@ -1,48 +1,222 @@
-# client
+# IMDB Movies – Vue Application
 
-This template should help get you started developing with Vue 3 in Vite.
+A movie management application built using **Vue 3, TypeScript, Pinia, Vuetify and Vite**. The application allows users to explore, create, edit and delete movies, manage movie-related information, and upload movie posters.
 
-## Recommended IDE Setup
+## Features
 
-[VS Code](https://code.visualstudio.com/) + [Vue (Official)](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).
+- **Movie Listing:** View all movies in a responsive card-based layout.
+- **Explore Movies:** View detailed information about individual movies.
+- **Create Movies:** Add new movies with relevant information.
+- **Edit Movies:** Fetch existing movie details from the API and prefill the form.
+- **Delete Movies:** Delete movies with confirmation.
+- **Poster Upload:** Upload movie posters separately.
+- **People Management:** Manage actors and producers.
+- **Genre Management:** Retrieve and associate genres with movies.
+- **Authentication:** Initialize authentication and manage API authorization.
+- **Responsive UI:** Built using Vuetify components and layouts.
 
-## Recommended Browser Setup
+## Technology Stack
 
-- Chromium-based browsers (Chrome, Edge, Brave, etc.):
-  - [Vue.js devtools](https://chromewebstore.google.com/detail/vuejs-devtools/nhdogjmejiglipccpnnnanhbledajbpd)
-  - [Turn on Custom Object Formatter in Chrome DevTools](http://bit.ly/object-formatters)
-- Firefox:
-  - [Vue.js devtools](https://addons.mozilla.org/en-US/firefox/addon/vue-js-devtools/)
-  - [Turn on Custom Object Formatter in Firefox DevTools](https://fxdx.dev/firefox-devtools-custom-object-formatters/)
+| Technology | Purpose |
+|---|---|
+| Vue 3 | Frontend framework |
+| TypeScript | Static typing |
+| Vite | Development server and build tool |
+| Pinia | State management |
+| Vue Router | Client-side routing |
+| Vuetify | UI component framework |
+| Axios | HTTP communication |
+| SweetAlert2 | Confirmation and alert dialogs |
 
-## Type Support for `.vue` Imports in TS
+## Project Structure
 
-TypeScript cannot handle type information for `.vue` imports by default, so we replace the `tsc` CLI with `vue-tsc` for type checking. In editors, we need [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) to make the TypeScript language service aware of `.vue` types.
+```text
+client/
+├── public/
+├── src/
+│   ├── assets/
+│   │   ├── images/
+│   │   └── main.css
+│   │
+│   ├── components/
+│   │   ├── layout/
+│   │   │   └── AppNavbar.vue
+│   │   ├── movies/
+│   │   │   ├── MovieCard.vue
+│   │   │   └── MovieDetailModal.vue
+│   │   └── shared/
+│   │       ├── LoadingMovies.vue
+│   │       ├── LoadingSpinner.vue
+│   │       └── PersonFormDialog.vue
+│   │
+│   ├── views/
+│   │   ├── Movies.vue
+│   │   ├── MovieForm.vue
+│   │   └── NotFound.vue
+│   │
+│   ├── stores/
+│   │   ├── index.ts
+│   │   └── modules/
+│   │       ├── movie.ts
+│   │       ├── actor.ts
+│   │       ├── producer.ts
+│   │       └── genre.ts
+│   │
+│   ├── services/
+│   │   ├── index.ts
+│   │   └── modules/
+│   │       ├── api.ts
+│   │       ├── movieService.ts
+│   │       ├── actorService.ts
+│   │       ├── producerService.ts
+│   │       ├── genreService.ts
+│   │       ├── authService.ts
+│   │       └── authToken.ts
+│   │
+│   ├── types/
+│   │   ├── index.ts
+│   │   └── modules/
+│   │       ├── api.ts
+│   │       ├── movie.ts
+│   │       ├── person.ts
+│   │       └── genre.ts
+│   │
+│   ├── router/
+│   │   └── index.ts
+│   │
+│   ├── plugins/
+│   │   └── vuetify.ts
+│   │
+│   ├── App.vue
+│   └── main.ts
+│
+├── index.html
+├── package.json
+├── package-lock.json
+└── vite.config.ts
+```
 
-## Customize configuration
+## Application Architecture
 
-See [Vite Configuration Reference](https://vite.dev/config/).
+The application follows a modular structure with separate responsibilities for UI, state management and API communication.
 
-## Project Setup
+```text
+Views / Components
+        |
+        v
+   Pinia Stores
+        |
+        v
+   API Services
+        |
+        v
+    API Layer
+        |
+        v
+    Backend API
+        |
+        v
+      Database
+```
 
-```sh
+- **Views:** Handle application pages and coordinate components.
+- **Components:** Provide reusable UI elements.
+- **Stores:** Manage shared application state using Pinia.
+- **Services:** Contain API-related operations.
+- **API Layer:** Handles HTTP requests, responses and errors.
+- **Types:** Define TypeScript interfaces and data structures.
+- **Router:** Manages application navigation.
+
+## Application Routes
+
+| Route | Description |
+|---|---|
+| `/` | Redirects to movies |
+| `/movies` | Movie listing page |
+| `/movies/create` | Create a new movie |
+| `/movies/:id/edit` | Edit an existing movie |
+| `/:pathMatch(.*)*` | Not Found page |
+
+## Installation and Setup
+
+### Prerequisites
+
+- Node.js
+- npm
+- Running backend API
+
+### 1. Clone the repository
+
+```bash
+git clone <repository-url>
+```
+
+### 2. Navigate to the client directory
+
+```bash
+cd client
+```
+
+### 3. Install dependencies
+
+```bash
 npm install
 ```
 
-### Compile and Hot-Reload for Development
+### 4. Configure environment variables
 
-```sh
+Create a `.env` file in the client directory:
+
+```env
+VITE_API_BASE_URL=<your-backend-api-url>
+```
+
+Replace the placeholder with your backend API base URL.
+
+### 5. Start the development server
+
+```bash
 npm run dev
 ```
 
-### Type-Check, Compile and Minify for Production
+The application will be available at the local URL provided by Vite, usually:
 
-```sh
+```text
+http://localhost:5173
+```
+
+## Available Scripts
+
+| Command | Description |
+|---|---|
+| `npm run dev` | Start development server |
+| `npm run build` | Build production application |
+| `npm run preview` | Preview production build |
+| `npm run type-check` | Run TypeScript checks |
+| `npm run lint` | Check code quality |
+| `npm run format` | Format source files |
+
+## Backend Integration
+
+The frontend communicates with the backend through a centralized API layer.
+
+The API services are organized by resource:
+
+- Movie Service
+- Actor Service
+- Producer Service
+- Genre Service
+- Authentication Service
+
+This separation keeps HTTP communication independent from UI components and makes the application easier to maintain.
+
+## Build for Production
+
+```bash
 npm run build
 ```
 
-### Lint with [ESLint](https://eslint.org/)
+The production-ready files are generated inside the `dist/` directory.
 
-```sh
-npm run lint
-```
+These files can be deployed to static hosting platforms such as Netlify.
+

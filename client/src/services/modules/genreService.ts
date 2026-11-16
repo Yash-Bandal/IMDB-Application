@@ -1,7 +1,6 @@
 import { apiGet } from './api'
 
-import type { ApiResponse } from '../types/api'
-import type { Genre } from '../types/genre'
+import type { ApiResponse, Genre } from '../../types'
 
 export async function getGenres(): Promise<Genre[]> {
   const response = await apiGet<ApiResponse<Genre[]>>('/genres')

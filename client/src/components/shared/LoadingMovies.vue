@@ -16,7 +16,7 @@
 
 <style scoped>
 .loading-container {
-  min-height: 60vh;
+  min-height: 50vh;
   display: flex;
   align-items: center;
   justify-content: center;

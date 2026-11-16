@@ -4,6 +4,7 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
 import vuetify from './plugins/vuetify'
+import { initializeAuth  } from './services/modules/authService'
 
 import './assets/main.css'
 
@@ -14,3 +15,5 @@ app.use(router)
 app.use(vuetify)
 
 app.mount('#app')
+
+initializeAuth()

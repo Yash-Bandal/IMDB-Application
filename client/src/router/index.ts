@@ -11,7 +11,8 @@ const router = createRouter({
     {
       path: '/movies',
       name: 'Movies',
-      component: () => import('../views/Movies.vue'),
+      // Lazy loading format
+      component: () => import('../views/Movies.vue'), 
     },
     {
       path: '/movies/create',

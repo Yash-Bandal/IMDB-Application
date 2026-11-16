@@ -1,0 +1,5 @@
+export * from './modules/api'
+export * from './modules/movieService'
+export * from './modules/actorService'
+export * from './modules/producerService'
+export * from './modules/genreService'

@@ -1,4 +1,3 @@
-
 <template>
   <v-app-bar
     color="white"
@@ -25,9 +24,9 @@
           Movies
         </RouterLink>
 
-        <RouterLink to="/movies/create" class="nav-link">
+        <!-- <RouterLink to="/movies/create" class="nav-link">
           Add Movie
-        </RouterLink>
+        </RouterLink> -->
       </nav>
 
       </nav>
@@ -44,7 +43,8 @@ import { RouterLink } from 'vue-router'
   border-bottom: 2px solid #eeeeee;
 }
 .navbar-container {
-  max-width: 1180px;
+  /* max-width: 1180px; */
+  max-width: 1600px;
   margin: 0 auto;
   padding-left: 32px;
   padding-right: 32px;

@@ -1,9 +1,102 @@
+<template>
+  <v-dialog
+    :model-value="modelValue"
+    max-width="500"
+    persistent
+    @update:model-value="emit('update:modelValue', $event)"
+  >
+    <v-card rounded="lg">
+      <v-card-title>{{ dialogTitle }}</v-card-title>
+
+      <!-- Wrap all input fields inside v-form -->
+      <v-form ref="personForm" @submit.prevent="handleSave">
+      <v-card-text class="pa-6">
+        <div class="d-flex flex-column ga-4">
+
+          <v-text-field
+            v-model="form.name"
+            label="Name"
+            placeholder="Enter name"
+            variant="outlined"
+            :rules="[requiredRule]"
+            autofocus
+            hide-details="auto"
+          />
+
+          <v-textarea
+            v-model="form.bio"
+            label="Biography"
+            placeholder="Enter biography"
+            variant="outlined"
+            rows="3"
+            :rules="[requiredRule]"
+            hide-details="auto"
+          />
+
+          <v-text-field
+            v-model="form.dob"
+            label="Date of Birth"
+            type="date"
+            variant="outlined"
+            :rules="[dateRule]"
+            hide-details="auto"
+          />
+
+          <v-select
+            v-model="form.gender"
+            label="Gender"
+            :items="['Male', 'Female', 'Other']"
+            variant="outlined"
+            :rules="[requiredRule]"
+            hide-details="auto"
+          />
+        </div>
+
+          <v-alert
+            v-if="error"
+            type="error"
+            variant="tonal"
+            class="mt-4"
+          >
+            {{ error }}
+          </v-alert>
+        </v-card-text>
+
+        <v-card-actions class="px-6 pb-5 pt-2">
+          <v-spacer />
+
+          <v-btn
+            variant="text"
+            :disabled="saving"
+            @click="closeDialog"
+          >
+            Cancel
+          </v-btn>
+
+          <v-btn
+            color="primary"
+            variant="flat"
+            :loading="saving"
+            :disabled="saving"
+            type="submit"
+          >
+            Save
+          </v-btn>
+        </v-card-actions>
+      </v-form>
+    </v-card>
+  </v-dialog>
+</template>
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { useAppStore } from '../../stores/store'
-import type { PersonRequest } from '../../types/person'
+import {
+  useActorStore,
+  useProducerStore,
+} from '../../stores'
+import type { PersonRequest } from '../../types'
 
+// Props and emits
 interface Props {
   modelValue: boolean
   type: 'actor' | 'producer'
@@ -16,18 +109,44 @@ const emit = defineEmits<{
   (event: 'saved', personId: number): void
 }>()
 
-const store = useAppStore()
+// Stores
+const actorStore = useActorStore()
+const producerStore = useProducerStore()
 
-const name = ref('')
-const bio = ref('')
-const dob = ref('')
-const gender = ref('')
+// Form state
+const form = ref<PersonRequest>({
+  name: '',
+  bio: '',
+  dob: '',
+  gender: '',
+})
 
-const loading = ref(false)
+// UI state
+const saving = ref(false)
 const error = ref('')
-
 const dialogTitle = ref('')
+const personForm = ref()
 
+// Validation rules
+const requiredRule = (value: string) =>
+  !!value?.trim() || 'This field is required.'
+
+const dateRule = (value: string) =>
+  !!value || 'Date of birth is required.'
+
+// Reset form
+function resetForm() {
+  form.value = {
+    name: '',
+    bio: '',
+    dob: '',
+    gender: '',
+  }
+
+  error.value = ''
+}
+
+// Watchers
 watch(
   () => props.type,
   (type) => {
@@ -40,61 +159,41 @@ watch(
   () => props.modelValue,
   (isOpen) => {
     if (isOpen) {
-      name.value = ''
-      bio.value = ''
-      dob.value = ''
-      gender.value = ''
-      error.value = ''
+      resetForm()
     }
   }
 )
 
+// Dialog actions
 function closeDialog() {
-  if (loading.value) return
+  if (saving.value) return
 
   emit('update:modelValue', false)
 }
 
+// Submit form
 async function handleSave() {
   error.value = ''
 
-  if (!name.value.trim()) {
-    error.value = 'Name is required.'
-    return
-  }
-
-  if (!bio.value.trim()) {
-    error.value = 'Biography is required.'
-    return
-  }
-
-  if (!dob.value) {
-    error.value = 'Date of birth is required.'
-    return
-  }
-
-  if (!gender.value) {
-    error.value = 'Please select a gender.'
-    return
-  }
+  const { valid } = await personForm.value.validate()
+  if (!valid) return
 
   const request: PersonRequest = {
-    name: name.value.trim(),
-    bio: bio.value.trim(),
-    dob: dob.value,
-    gender: gender.value,
+    ...form.value,
+    name: form.value.name.trim(),
+    bio: form.value.bio.trim(),
   }
 
-  loading.value = true
+  saving.value = true
 
   try {
     let personId: number
 
     if (props.type === 'actor') {
-      const response = await store.addActor(request)
+      const response = await actorStore.addActor(request)
       personId = response.id
     } else {
-      const response = await store.addProducer(request)
+      const response = await producerStore.addProducer(request)
       personId = response.id
     }
 
@@ -104,84 +203,7 @@ async function handleSave() {
     error.value =
       err instanceof Error ? err.message : 'Failed to save person.'
   } finally {
-    loading.value = false
+    saving.value = false
   }
 }
 </script>
-
-<template>
-  <v-dialog
-    :model-value="modelValue"
-    max-width="500"
-    :persistent="loading"
-    @update:model-value="emit('update:modelValue', $event)"
-  >
-    <v-card rounded="lg">
-      <v-card-title>{{ dialogTitle }}</v-card-title>
-
-      <v-card-text>
-        <v-text-field
-          v-model="name"
-          label="Name"
-          placeholder="Enter name"
-          variant="outlined"
-          :error-messages="error === 'Name is required.' ? error : []"
-          autofocus
-        />
-
-        <v-textarea
-          v-model="bio"
-          label="Biography"
-          placeholder="Enter biography"
-          variant="outlined"
-          rows="3"
-        />
-
-        <v-text-field
-          v-model="dob"
-          label="Date of Birth"
-          type="date"
-          variant="outlined"
-        />
-
-        <v-select
-          v-model="gender"
-          label="Gender"
-          :items="['Male', 'Female', 'Other']"
-          variant="outlined"
-        />
-
-        <v-alert
-          v-if="error && error !== 'Name is required.'"
-          type="error"
-          variant="tonal"
-          class="mt-2"
-        >
-          {{ error }}
-        </v-alert>
-      </v-card-text>
-
-      <v-card-actions>
-        <v-spacer />
-
-        <v-btn
-          variant="text"
-          :disabled="loading"
-          @click="closeDialog"
-        >
-          Cancel
-        </v-btn>
-
-        <v-btn
-          color="primary"
-          variant="flat"
-          :loading="loading"
-          :disabled="loading"
-          @click="handleSave"
-        >
-          Save
-        </v-btn>
-      </v-card-actions>
-    </v-card>
-  </v-dialog>
-</template>
