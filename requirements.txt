@@ -1,7 +1,9 @@
 Flask==3.1.1
 Flask-Cors==6.0.1
-PyJWT==2.10.1
 gunicorn==23.0.0
-python-tds==1.16.1
+PyJWT==2.10.1
+certifi==2026.10.23
+pyOpenSSL==26.4.0
+python-tds==1.17.1
 python-dotenv==1.1.1
 requests==2.32.4

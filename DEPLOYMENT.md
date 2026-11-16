@@ -1,42 +1,36 @@
 # Flask API on Render
 
-The API deploys on Render's native Python runtime. `build.sh` installs Microsoft's ODBC Driver 18 for Debian 12, installs the Python dependencies, and verifies that the driver is available before the service starts. `apt.txt` provides the required ODBC system libraries and installer utilities. Docker is not used.
+The API uses Render's native Python runtime and `python-tds`, a pure-Python SQL Server driver installed with pip. It needs no Docker, root access, system packages, or Microsoft ODBC Driver.
 
 ## Render
 
 Create a Blueprint from the repository root using `render.yaml`, or create a native Python web service with:
 
 - Root directory: `server`
-- Build command: `bash build.sh`
+- Build command: `pip install -r requirements.txt`
 - Start command: `gunicorn --workers 2 --bind 0.0.0.0:$PORT app:app`
 - Health check path: `/health`
 
-Provide the database, Supabase, and CORS values marked `sync: false` on the Render service's Environment page:
+Set these service environment variables:
 
-- `DATABASE_CONNECTION_STRING`: an ODBC Driver 18 connection string for a SQL Server database reachable from Render. Example format: `Driver={ODBC Driver 18 for SQL Server};Server=tcp:HOST,1433;Database=DB;Uid=USER;Pwd=PASSWORD;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;`
+- `DATABASE_CONNECTION_STRING`: a SQL Server connection string for a server reachable from Render. Example format: `Server=tcp:HOST,1433;Database=DB;Uid=USER;Pwd=PASSWORD;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;`
 - `SUPABASE_URL`: the HTTPS URL of the Supabase project.
 - `SUPABASE_SECRET_KEY`: a Supabase secret key that can upload objects to the poster bucket.
 - `CORS_ALLOWED_ORIGINS`: the deployed Vue site's exact origin, including `https://` and without a path. Separate multiple origins with commas.
 
-Set `DATABASE_CONNECTION_STRING` in Render to a SQL Server that is reachable over the network and accepts SQL credentials. The legacy development connection uses Windows integrated authentication and a machine-local server name; it can work on the development machine but cannot be used by Render's Debian service.
+The connection string must use SQL credentials and a network-reachable SQL Server. The legacy development connection uses Windows integrated authentication and a machine-local server name; it works on the development machine but cannot be used by Render.
 
-For local development, the API reads database and Supabase settings from the existing .NET `appsettings.json` files when present; environment variables and `.env` values take precedence. Run `python app.py` locally, or use Gunicorn on Linux. Render injects `PORT`; Gunicorn binds to `0.0.0.0:$PORT`.
+For `Encrypt=yes`, the SQL Server certificate must chain to a trusted CA. If the server uses a private CA, provide its PEM certificate bundle as a Render secret file and set `DATABASE_CA_FILE` to that file's path. `TrustServerCertificate=yes` encrypts the connection but disables server-certificate verification; prefer `no` with a valid certificate.
 
-Render provides `PORT`; Gunicorn binds to that port. The `/health` endpoint is a simple process health check and does not depend on SQL Server.
+For local development, the API reads database and Supabase settings from the existing .NET `appsettings.json` files when present; environment variables and `.env` values take precedence. Copy `.env.example` to `.env` and replace its placeholders. Install dependencies with `pip install -r requirements.txt`, then run `python app.py`. Render injects `PORT`; Gunicorn binds to `0.0.0.0:$PORT`.
+
+## Code structure
+
+The Flask entry point remains `app.py` so local startup and the `app:app` Gunicorn target continue to work. Application code lives in `imdb_api/`, organized into controllers for HTTP routes, services for application logic, repositories for SQL access, plus shared configuration, errors, and validation.
+
+The `/health` endpoint is a process health check and does not depend on SQL Server.
 
 All API routes are accessible without a JWT bearer token. PyJWT remains installed, but JWT configuration is optional and is only needed if the legacy signup/login routes are used. Since the existing SQL schema requires a review `UserId`, creating a review also requires a valid `userId` in the JSON body.
-
-## Local development
-
-Copy `.env.example` to `.env`, then replace the placeholders with working credentials. Install the matching system ODBC Driver 18, then run:
-
-```powershell
-cd server
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python app.py
-```
 
 ## Existing users
 
