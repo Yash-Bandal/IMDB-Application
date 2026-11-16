@@ -1,5 +1,0 @@
-ca-certificates
-curl
-sudo
-unixodbc
-unixodbc-dev
